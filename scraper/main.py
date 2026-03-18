@@ -7,6 +7,7 @@ from collections import Counter
 from dotenv import load_dotenv
 import pymongo
 from multiprocessing import Process
+import ollama
 
 
 def crawl_wiki():
@@ -92,11 +93,15 @@ def main():
         # So math doesn't break
         if not latest["sell-ingame"]:
             latest["sell-ingame"].append(0)
+            latest["sell-ingame"].append(0)
         if not latest["sell-offline"]:
+            latest["sell-offline"].append(0)
             latest["sell-offline"].append(0)
         if not latest["buy-ingame"]:
             latest["buy-ingame"].append(0)
+            latest["buy-ingame"].append(0)
         if not latest["buy-offline"]:
+            latest["buy-offline"].append(0)
             latest["buy-offline"].append(0)
 
         count = Counter(latest["sell-ingame"])
@@ -124,8 +129,6 @@ def main():
                 ]
             ),
         }
-
-    client.close()
 
     for k, v in sorted(
         list(item_details.items()), key=lambda x: -x[1]["plat_min"] / x[1]["standing"]
@@ -167,6 +170,35 @@ def main():
         key=lambda x: -x[1]["average_stdev"] / x[1]["standing"],
     )[:10]:
         print(f"{k} - {v['average_stdev'] / v['standing']:.1f}p/10k")
+
+    samples = list(items.aggregate([{"$sample": {"size": 8}}]))
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a financial analyst with experience reading MongoDB databases.",
+        },
+        {
+            "role": "user",
+            "content": f"""The following are scans of a Warframe marketplace for items with a faction with various sets of listings taken from across various points in time. The important points here are the standing, representing how expensive the item is in in-game currency, and the prices in the most recent scan, showing all of the trades on the market as of the last time scanned; personally, I consider sell-ingame the most reliable data to analyze, but there might be more to factor in. Summarize any key insights about the documents provided and the dataset at large, then give me the necessary information to perform such queries; I want to understand the best way to analyze the data and figure out what the best items to invest in are, as the data seems quite sporadic. Afterwards, please perform market analysis on the data given yourself.
+    
+    Documents:
+    {samples}""",
+        },
+    ]
+
+    while True:
+        response = ollama.chat(
+            model="qwen3:8b",
+            messages=messages,
+        )
+
+        llm_msg = response["message"]
+        messages.append(llm_msg)
+        print(f"LLM: {llm_msg['content']}")
+
+        messages.append({"role": "user", "content": input("You: ").strip()})
+
+    client.close()
 
 
 if __name__ == "__main__":
