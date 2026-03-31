@@ -5,6 +5,9 @@ from sys import argv
 from collections import Counter
 
 from dotenv import load_dotenv
+import json
+import json_repair
+import re
 import pymongo
 from multiprocessing import Process
 import ollama
@@ -67,122 +70,28 @@ def main():
         market_process.start()
         market_process.join()
 
-    item_details = {}
-
-    for name in item_names:
-        item = items.find_one({"item": name})
-
-        # For faction filtering. Hardcoded for now
-        valid_factions = [
-            "Steel Meridian",
-            "Arbiters of Hexis",
-            "Cephalon Suda",
-            "The Perrin Sequence",
-            "Red Veil",
-            "Cephalon Suda",
-        ]
-
-        if not any(i in valid_factions for i in item["factions"]):
-            continue
-
-        if "scans" not in item.keys():
-            continue
-
-        latest = sorted(list(item["scans"]), key=lambda x: x["time"])[-1]
-
-        # So math doesn't break
-        if not latest["sell-ingame"]:
-            latest["sell-ingame"].append(0)
-            latest["sell-ingame"].append(0)
-        if not latest["sell-offline"]:
-            latest["sell-offline"].append(0)
-            latest["sell-offline"].append(0)
-        if not latest["buy-ingame"]:
-            latest["buy-ingame"].append(0)
-            latest["buy-ingame"].append(0)
-        if not latest["buy-offline"]:
-            latest["buy-offline"].append(0)
-            latest["buy-offline"].append(0)
-
-        count = Counter(latest["sell-ingame"])
-
-        for k, v in sorted(list(count.items()), key=lambda x: x[0]):
-            if v <= 1:
-                count.pop(k)
-            break
-
-        metric = latest["sell-ingame"]
-
-        average = mean(metric)
-        stddev = stdev(metric)
-
-        item_details[item["name"]] = {
-            "standing": item["standing"],
-            "plat_min": min(metric),
-            "plat_min_adjusted": min(count.keys()),
-            "average": average,
-            "average_stdev": mean(
-                [
-                    x
-                    for x in latest["sell-ingame"]
-                    if average - stddev <= x and x <= average + stddev
-                ]
-            ),
-        }
-
-    for k, v in sorted(
-        list(item_details.items()), key=lambda x: -x[1]["plat_min"] / x[1]["standing"]
-    ):
-        print(
-            f"{k} - {v['plat_min'] / v['standing']}p per 10k standing ({round(v['average_stdev']) / v['standing']}p against the average)"
-        )
-
-    print("---")
-
-    print("Sorted by minimum bid:")
-    for k, v in sorted(
-        list(item_details.items()), key=lambda x: -x[1]["plat_min"] / x[1]["standing"]
-    )[:10]:
-        print(f"{k} - {v['plat_min'] / v['standing']:.1f}p/10k")
-
-    print("---")
-
-    print("Sorted by minimum bid minus undersellers:")
-    for k, v in sorted(
-        list(item_details.items()),
-        key=lambda x: -x[1]["plat_min_adjusted"] / x[1]["standing"],
-    )[:10]:
-        print(f"{k} - {v['plat_min_adjusted'] / v['standing']:.1f}p/10k")
-
-    print("---")
-
-    print("Sorted by average:")
-    for k, v in sorted(
-        list(item_details.items()), key=lambda x: -x[1]["average"] / x[1]["standing"]
-    )[:10]:
-        print(f"{k} - {v['average'] / v['standing']:.1f}p/10k")
-
-    print("---")
-
-    print("Sorted by average of bids within 1 stdev:")
-    for k, v in sorted(
-        list(item_details.items()),
-        key=lambda x: -x[1]["average_stdev"] / x[1]["standing"],
-    )[:10]:
-        print(f"{k} - {v['average_stdev'] / v['standing']:.1f}p/10k")
-
-    samples = list(items.aggregate([{"$sample": {"size": 8}}]))
+    samples = list(items.aggregate([{"$sample": {"size": 3}}]))
     messages = [
         {
             "role": "system",
-            "content": "You are a financial analyst with experience reading MongoDB databases.",
+            "content": """You are a MongoDB query expert and financial analyst specializing in work with marketplace data. You will receive a sample of documents from a database and an explanation of the data. You will receive a natural language query from the user describing what they want to analyze, and your job is to output a single valid pymongo aggregation pipeline (a list of dicts) that would answer the user's query effectively. 
+
+            Fields:
+            - name, faction, query (Identifiers. query is never relevant and should never be called)
+            - standing (In-game item price. Scaled 1:10000)
+            - scans (Array of scans of the market, containing the four arrays below)
+              - sell-ingame, sell-offline, buy-ingame, buy-offline (Arrays of market listings in platinum)
+
+            The purchasing power of an item is a platinum value divided by its standing price. Only use platinum / standing when asked for purchasing power.
+            sell-ingame is the most accurate indicator of platinum price of the entries in scans. Ignore sell-offline, buy-ingame, and buy-offline unless absolutely necessary.
+            Remember that sell-ingame is an array. It's multiple market listings. Also remember that scan is an array; it's multiple scans.
+            
+            Respond with only a valid pymongo pipeline to match the user's query. You work in Python, so make sure your query is a pymongo query specifically; just output a raw Python list of dicts. Do not send any markdown explaining the pipeline, just the raw pipeline itself so it can immediately be used. Only use field names as they are presented in the samples.""",
         },
         {
             "role": "user",
-            "content": f"""The following are scans of a Warframe marketplace for items with a faction with various sets of listings taken from across various points in time. The important points here are the standing, representing how expensive the item is in in-game currency, and the prices in the most recent scan, showing all of the trades on the market as of the last time scanned; personally, I consider sell-ingame the most reliable data to analyze, but there might be more to factor in. Summarize any key insights about the documents provided and the dataset at large, then give me the necessary information to perform such queries; I want to understand the best way to analyze the data and figure out what the best items to invest in are, as the data seems quite sporadic. Afterwards, please perform market analysis on the data given yourself.
-    
-    Documents:
-    {samples}""",
+            "content": f"""Samples:
+            {samples}""",
         },
     ]
 
@@ -194,9 +103,27 @@ def main():
 
         llm_msg = response["message"]
         messages.append(llm_msg)
-        print(f"LLM: {llm_msg['content']}")
+
+        message = llm_msg["content"].split("</think>")[-1].strip()
+        response = re.findall(r"\[[\s\S]*\{[\s\S]*\}[\s\S]*\]", message)
+
+        print(f"""LLM: {message}""")
+
+        if response:
+            pipeline = json_repair.loads(response[0])
+            print(pipeline)
+
+            try:
+                results = list(items.aggregate(pipeline))
+            except pymongo.errors.OperationFailure as e:
+                print(f"PyMongo returned a faulty pipeline: {e}")
+            else:
+                for item in results:
+                    print(item)
+                    print(f"""- {item["name"]}""")
 
         messages.append({"role": "user", "content": input("You: ").strip()})
+        messages.append({"role": "assistant", "content": "[{"})
 
     client.close()
 
