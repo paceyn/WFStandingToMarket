@@ -10,6 +10,7 @@ I'm currently focusing my efforts on an additional branch featuring Ollama integ
 # Usage
 - Install uv and call `uv sync` in the directory, or use any other form of Python virtual environment generator that can parse the pyproject.toml.
 - Create a `.env` file with the line `DB=[MongoDB URI]`. A MongoDB Atlas development database has been good in my use so far. At this point, I also recommend placing a user agent in the `settings.py` file.
+- Install `ollama` to your system. Open it up and install the model `qwen2.5-coder:14b` (or an alternative of your choice if you choose to modify the code). You can close it afterwards.
 - Run `uv run main.py -s`, or source the virtual environment and run the program through Python normally. The wiki will be scraped if the table doesn't exist in the database, with the market being scraped only being entered if the `-s` flag is used in the future. If you just want to see the results without running the scraper on the market again, just run `uv run main.py`.
 
 # Sample output

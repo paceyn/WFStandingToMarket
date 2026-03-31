@@ -74,17 +74,19 @@ def main():
     messages = [
         {
             "role": "system",
-            "content": """You are a MongoDB query expert and financial analyst specializing in work with marketplace data. You will receive a sample of documents from a database and an explanation of the data. You will receive a natural language query from the user describing what they want to analyze, and your job is to output a single valid pymongo aggregation pipeline (a list of dicts) that would answer the user's query effectively. 
+            "content": """You are a MongoDB query expert and financial analyst specializing in work with marketplace data. You will receive a sample of documents from a database and an explanation of the data. You will receive a natural language query from the user describing what they want to analyze, and your job is to output a single valid pymongo aggregation pipeline (a list of dicts) that would answer the user's query effectively.
 
             Fields:
             - name, faction, query (Identifiers. query is never relevant and should never be called)
-            - standing (In-game item price. Scaled 1:10000)
+            - standing (In-game item price as a float. Scaled 1:10000)
             - scans (Array of scans of the market, containing the four arrays below)
-              - sell-ingame, sell-offline, buy-ingame, buy-offline (Arrays of market listings in platinum)
+              - sell-ingame, sell-offline, buy-ingame, buy-offline (Arrays of market listings in platinum as ints)
 
             The purchasing power of an item is a platinum value divided by its standing price. Only use platinum / standing when asked for purchasing power.
             sell-ingame is the most accurate indicator of platinum price of the entries in scans. Ignore sell-offline, buy-ingame, and buy-offline unless absolutely necessary.
-            Remember that sell-ingame is an array. It's multiple market listings. Also remember that scan is an array; it's multiple scans.
+            Remember that sell-ingame is an array. It's multiple market listings. Also remember that scan is an array; it's multiple scans. Do not try to divide sell-ingame directly.
+            Never list duplicate items when listing multiple items. All responses should be unique.
+            Results should always include the name field.
             
             Respond with only a valid pymongo pipeline to match the user's query. You work in Python, so make sure your query is a pymongo query specifically; just output a raw Python list of dicts. Do not send any markdown explaining the pipeline, just the raw pipeline itself so it can immediately be used. Only use field names as they are presented in the samples.""",
         },
@@ -95,9 +97,15 @@ def main():
         },
     ]
 
+    if len(argv) > 1 and argv[1] != "-s":
+        model = argv[1]
+    else:
+        model = "qwen2.5-coder:14b"
+
     while True:
+
         response = ollama.chat(
-            model="qwen3:8b",
+            model=model,
             messages=messages,
         )
 
@@ -111,19 +119,24 @@ def main():
 
         if response:
             pipeline = json_repair.loads(response[0])
-            print(pipeline)
 
             try:
                 results = list(items.aggregate(pipeline))
             except pymongo.errors.OperationFailure as e:
-                print(f"PyMongo returned a faulty pipeline: {e}")
+                print(f"You: PyMongo returned a faulty pipeline: {e}")
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"You: PyMongo returned a faulty pipeline: {e}",
+                    }
+                )
+                continue
             else:
                 for item in results:
-                    print(item)
                     print(f"""- {item["name"]}""")
 
         messages.append({"role": "user", "content": input("You: ").strip()})
-        messages.append({"role": "assistant", "content": "[{"})
+        messages.append({"role": "assistant", "content": "["})
 
     client.close()
 
